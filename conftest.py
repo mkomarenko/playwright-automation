@@ -1,20 +1,34 @@
 import json
 import logging
 import os.path
+import allure
 
-from _pytest.fixtures import fixture
-from playwright.sync_api import Playwright, sync_playwright
+from pytest import fixture, hookimpl
+from playwright.sync_api import sync_playwright
 
+from helpers.db import DataBase
 from helpers.web_service import WebService
 from page_objects.application import App
 from settings import *
 
 
 @fixture(autouse=True, scope='session')
-def preconditions():
+def preconditions(request):
     logging.info('Pre-condition started')
+    base_url = request.config.getini('base_url')
+    secure = request.config.getoption('--secure')
+    config = load_config(secure)
     yield
     logging.info('Post-condition started')
+    web = WebService(base_url)
+    web.login(**config["users"]["userRole3"])
+    for test in request.node.items:
+        if len(test.own_markers) > 0:
+            if test.own_markers[0].name == 'test_id':
+                if test.result_call.passed:
+                    web.report_test(test.own_markers[0].args[0], 'PASS')
+                elif test.result_call.failed:
+                    web.report_test(test.own_markers[0].args[0], 'FAIL')
 
 
 @fixture(scope='session')
@@ -23,9 +37,17 @@ def get_web_service(request):
     secure = request.config.getoption('--secure')
     config = load_config(secure)
     web = WebService(base_url)
-    web.login(**config)
+    web.login(**config["users"]["userRole1"])
     yield web
     web.close()
+
+
+@fixture(scope='session')
+def get_db(request):
+    path = request.config.getini('db_path')
+    db = DataBase(path)
+    yield db
+    db.close()
 
 
 @fixture(scope='session')
@@ -65,19 +87,31 @@ def desktop_app(get_browser, request):
 
 
 @fixture(scope='session')
-def desktop_app_auth(desktop_app):
-    # secure = request.config.getoption('--secure')
-    # config = load_config(secure)
+def desktop_app_auth(request, desktop_app):
+    secure = request.config.getoption('--secure')
+    config = load_config(secure)
     app = desktop_app
     app.goto('/login')
-    # app.login(**config)
-    login = os.environ.get('TESTME_USER')
-    password = os.environ.get('TESTME_PWD')
-    app.login(login=login, password=password)
+    app.login(**config["users"]["userRole1"])
+    # login = os.environ.get('TESTME_USER')
+    # password = os.environ.get('TESTME_PWD')
+    # app.login(login=login, password=password)
     yield app
 
 
-@fixture(scope='session', params=['iPhone 12 Mini landscape', 'Pixel 2'])
+@fixture(scope='session')
+def desktop_app_bob(get_browser, request):
+    secure = request.config.getoption('--secure')
+    config = load_config(secure)
+    base_url = request.config.getini('base_url')
+    app = App(get_browser, base_url=base_url, **BROWSER_OPTIONS)
+    app.goto('/login')
+    app.login(**config["users"]["userRole2"])
+    yield app
+    app.close()
+
+
+@fixture(scope='session', params=['Pixel 2', 'iPhone 12 Mini'], ids=['Pixel 2', 'iPhone 12 Mini'])
 def mobile_app(get_playwright, get_browser, request):
     # device = request.config.getoption('--device')
     device = request.param
@@ -94,16 +128,35 @@ def mobile_app(get_playwright, get_browser, request):
 
 
 @fixture(scope='session')
-def mobile_app_auth(mobile_app):
-    # secure = request.config.getoption('--secure')
-    # config = load_config(secure)
+def mobile_app_auth(mobile_app, request):
+    secure = request.config.getoption('--secure')
+    config = load_config(secure)
     app = mobile_app
     app.goto('/login')
-    # app.login(**config)
-    login = os.environ.get('TESTME_USER')
-    password = os.environ.get('TESTME_PWD')
-    app.login(login=login, password=password)
+    app.login(**config["users"]["userRole1"])
+    # login = os.environ.get('TESTME_USER')
+    # password = os.environ.get('TESTME_PWD')
+    # app.login(login=login, password=password)
     yield app
+
+
+@hookimpl(tryfirst=True, hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    result = outcome.get_result()
+    # result.when == "setup" >> "call" >> "teardown"
+    setattr(item, f'result_{result.when}', result)
+
+
+@fixture(scope='function', autouse=True)
+def make_screenshot(request):
+    yield
+    if request.node.result_call.failed:
+        for arg in request.node.funcargs.values():
+            if isinstance(arg, App):
+                allure.attach(body=arg.page.screenshot(),
+                              name='screenshot',
+                              attachment_type=allure.attachment_type.PNG)
 
 
 def pytest_addoption(parser):
@@ -112,6 +165,7 @@ def pytest_addoption(parser):
     parser.addoption('--browser', action='store', default='chromium')
     parser.addini('headless', help='run tests in headless mode', default=False)
     parser.addini('base_url', help='Base url of the site under test', default='http://127.0.0.1:8000')
+    parser.addini('db_path', help='path to sqlite db file', default='C:\\Users\\maxko\\repo\\TestMe-TCM\\db.sqlite3')
 
 
 def load_config(file):

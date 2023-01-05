@@ -9,7 +9,8 @@ __pycache__/
 venv/
 
 # reporting
-report/
+report.xml
+allure_results/
 
 # logs
 *.log
